@@ -20,6 +20,8 @@ struct Project: Identifiable, Sendable {
     var slug: String { url.lastPathComponent }
     var name: String { slug.prefix(1).uppercased() + slug.dropFirst() }
 
+    var isReleaseRunning: Bool { ["in_progress", "queued", "waiting", "pending"].contains(releaseRun ?? "") }
+
     /// VERSION is ahead of the latest release: a release is due, pushed or not.
     var isReleasePending: Bool { releaseChecked && version != nil && version != released }
 

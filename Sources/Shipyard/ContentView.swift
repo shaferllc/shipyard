@@ -159,6 +159,9 @@ struct ContentView: View {
         if let unpushed = p.unpushed, unpushed > 0 {
             Button("Push \(unpushed) Commit\(unpushed == 1 ? "" : "s")") { Task { await fleet.push(p) } }
         }
+        if p.releaseRun == "failure" {
+            Button("Re-run Failed Release") { Task { await fleet.rerunRelease(p) } }
+        }
         releaseButtons(for: p)
         Divider()
         Button("Open in Xcode") { Open.inXcode(p) }

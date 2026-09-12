@@ -28,6 +28,33 @@ final class Fleet: ObservableObject {
         hasGitHubCLI = Shell.hasGitHubCLI
         guard hasGitHubCLI else { return }
         projects = await Scanner.checkAllOnGitHub(local)
+
+        // Keep a running release's row current until it finishes.
+        if followUp == nil, projects.contains(where: \.isReleaseRunning) {
+            followUp = Task {
+                try? await Task.sleep(for: .seconds(30))
+                followUp = nil
+                await refresh()
+            }
+        }
+    }
+
+    private var followUp: Task<Void, Never>?
+
+    /// Re-runs the failed jobs of the latest Release run, once whatever failed
+    /// it (usually the signing secrets) is fixed. No new commit needed.
+    func rerunRelease(_ project: Project) async {
+        guard let repo = project.repo else { return }
+        do {
+            try await Task.detached {
+                let id = try Shell.run(["gh", "run", "list", "-R", repo, "--workflow", "release.yml",
+                                        "--limit", "1", "--json", "databaseId", "--jq", ".[0].databaseId"])
+                try Shell.run(["gh", "run", "rerun", id, "--failed", "-R", repo])
+            }.value
+        } catch {
+            problem = "\(project.name): \(error.localizedDescription)"
+        }
+        await refresh()
     }
 
     /// Bumps VERSION, commits it and pushes main. The push is what cuts the
