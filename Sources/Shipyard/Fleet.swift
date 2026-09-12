@@ -12,13 +12,29 @@ final class Fleet: ObservableObject {
     @Published private(set) var projects: [Project] = []
     @Published private(set) var isRefreshing = false
     @Published private(set) var hasGitHubCLI = true
+    /// Bumped by every refresh, so detail panes reload what they show.
+    @Published private(set) var generation = 0
+    /// The build, test or scaffold running now, or the last one. One at a
+    /// time: a universal build already takes the whole machine.
+    @Published private(set) var job: Job?
+    /// An app to select once it appears, like one just scaffolded.
+    @Published var focus: Project.ID?
+    @Published var isCreatingApp = false
     @Published var problem: String?
+
+    private var followUp: Task<Void, Never>?
+
+    static var appsFolder: URL { folder(appsFolderKey, defaultAppsFolder) }
 
     func refresh() async {
         guard !isRefreshing else { return }
         isRefreshing = true
-        defer { isRefreshing = false }
-        let apps = Self.folder(Self.appsFolderKey, Self.defaultAppsFolder)
+        defer {
+            isRefreshing = false
+            generation += 1
+        }
+        Icons.clear()
+        let apps = Self.appsFolder
         let products = Self.folder(Self.siteFolderKey, Self.defaultSiteFolder)
             .appending(path: "config/products.php")
 
@@ -39,23 +55,7 @@ final class Fleet: ObservableObject {
         }
     }
 
-    private var followUp: Task<Void, Never>?
-
-    /// Re-runs the failed jobs of the latest Release run, once whatever failed
-    /// it (usually the signing secrets) is fixed. No new commit needed.
-    func rerunRelease(_ project: Project) async {
-        guard let repo = project.repo else { return }
-        do {
-            try await Task.detached {
-                let id = try Shell.run(["gh", "run", "list", "-R", repo, "--workflow", "release.yml",
-                                        "--limit", "1", "--json", "databaseId", "--jq", ".[0].databaseId"])
-                try Shell.run(["gh", "run", "rerun", id, "--failed", "-R", repo])
-            }.value
-        } catch {
-            problem = "\(project.name): \(error.localizedDescription)"
-        }
-        await refresh()
-    }
+    // MARK: Git and releases
 
     /// Bumps VERSION, commits it and pushes main. The push is what cuts the
     /// signed, notarized release (shaferllc/.github mac-release).
@@ -101,9 +101,179 @@ final class Fleet: ObservableObject {
         await refresh()
     }
 
+    /// Re-runs the failed jobs of the latest Release run, once whatever failed
+    /// it (usually the signing secrets) is fixed. No new commit needed.
+    func rerunRelease(_ project: Project) async {
+        guard let repo = project.repo else { return }
+        do {
+            try await Task.detached {
+                let id = try Shell.run(["gh", "run", "list", "-R", repo, "--workflow", "release.yml",
+                                        "--limit", "1", "--json", "databaseId", "--jq", ".[0].databaseId"])
+                try Shell.run(["gh", "run", "rerun", id, "--failed", "-R", repo])
+            }.value
+        } catch {
+            problem = "\(project.name): \(error.localizedDescription)"
+        }
+        await refresh()
+    }
+
+    // MARK: Builds
+
+    /// make-app.sh: build for this Mac, install to /Applications, launch.
+    func build(_ p: Project) { start("Build & Run \(p.name)", ["./make-app.sh"], id: p.id, in: p.url) }
+
+    func test(_ p: Project) { start("Test \(p.name)", ["swift", "test"], id: p.id, in: p.url) }
+
+    /// The universal dist/ build, shown in Finder when it's done.
+    func package(_ p: Project) {
+        start("Package \(p.name)", ["./make-app.sh", "--dist"], id: p.id, in: p.url) { ok in
+            if ok { NSWorkspace.shared.activateFileViewerSelecting([p.url.appending(path: "dist")]) }
+        }
+    }
+
+    /// Scaffolds an app with new-mac-app (local only: no repo, no site entry),
+    /// selects it, and with a brief hands it to Claude Code to build.
+    func createApp(name: String, about: String, brief: String) {
+        let folder = Self.appsFolder
+        let id = folder.appending(path: name.lowercased()).path
+        start("New App: \(name)", ["new-mac-app", name, about, "--local"], id: id, in: folder,
+              environment: ["APPS_DIR": folder.path]) { [weak self] ok in
+            guard ok, let self else { return }
+            Task {
+                await self.refresh()
+                self.focus = id
+                guard !brief.isEmpty, let p = self.projects.first(where: { $0.id == id }) else { return }
+                Open.inClaudeCode(p, prompt: """
+                    \(name) was just scaffolded with new-mac-app --local. Build it: \(brief) \
+                    Follow the new-app skill from step 4 (build it, verify, commit). Don't publish it.
+                    """)
+            }
+        }
+    }
+
+    func dismissJob() {
+        if job?.isRunning != true { job = nil }
+    }
+
+    private func start(_ title: String, _ command: [String], id: Project.ID, in folder: URL,
+                       environment: [String: String] = [:], then: (@MainActor (Bool) -> Void)? = nil) {
+        if let job, job.isRunning {
+            problem = "\(job.title) is still running. Stop it first."
+            return
+        }
+        let job = Job(projectID: id, title: title)
+        self.job = job
+        do {
+            try job.start(command, in: folder, environment: environment) { [weak self] status in
+                self?.objectWillChange.send()  // rows show which app is building
+                then?(status == 0)
+            }
+        } catch {
+            problem = "\(title): \(error.localizedDescription)"
+        }
+    }
+
     static func folder(_ key: String, _ fallback: String) -> URL {
         let path = UserDefaults.standard.string(forKey: key).flatMap { $0.isEmpty ? nil : $0 } ?? fallback
         return URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true)
+    }
+}
+
+/// A long command whose output streams in as it runs: a build, a test, a scaffold.
+@MainActor
+final class Job: ObservableObject {
+    let projectID: Project.ID
+    let title: String
+    @Published private(set) var output = ""
+    @Published private(set) var lastLine = ""
+    @Published private(set) var isRunning = false
+    @Published private(set) var status: Int32?
+
+    private var process: Process?
+    private var onExit: (@MainActor (Int32) -> Void)?
+    private var exited: Int32?
+    private var sawEOF = false
+
+    init(projectID: Project.ID, title: String) {
+        self.projectID = projectID
+        self.title = title
+    }
+
+    func start(_ command: [String], in folder: URL, environment extra: [String: String],
+               onExit: @escaping @MainActor (Int32) -> Void) throws {
+        self.onExit = onExit
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = command
+        process.environment = Shell.environment.merging(extra) { $1 }
+        process.currentDirectoryURL = folder
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe  // one stream, in the order it was printed
+        process.standardInput = FileHandle.nullDevice
+        // Each hop to main is queued in order, so output lands in order and the
+        // end of the stream lands after the last of it.
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if data.isEmpty { handle.readabilityHandler = nil }
+            let text = String(decoding: data, as: UTF8.self)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { data.isEmpty ? self.endOfOutput() : self.append(text) }
+            }
+        }
+        process.terminationHandler = { finished in
+            let code = finished.terminationStatus
+            DispatchQueue.main.async { MainActor.assumeIsolated { self.exit(code) } }
+        }
+        append("$ \(command.joined(separator: " "))\n")
+        do {
+            try process.run()
+        } catch {
+            append("\(error.localizedDescription)\n")
+            status = -1
+            throw error
+        }
+        // Our copy of the write end has to close, or the stream never ends.
+        try? pipe.fileHandleForWriting.close()
+        self.process = process
+        isRunning = true
+    }
+
+    // ponytail: terminate() stops make-app.sh but not a swift build it already
+    // started; that finishes on its own. Kill the process group if that bites.
+    func stop() {
+        guard isRunning, let process else { return }
+        process.terminate()
+        append("\n■ Stopped\n")
+        finish(15)
+    }
+
+    private func append(_ text: String) {
+        output += text
+        if output.utf8.count > 600_000 { output = String(output.suffix(400_000)) }
+        if let line = text.split(whereSeparator: \.isNewline).last(where: { !$0.allSatisfy(\.isWhitespace) }) {
+            lastLine = String(line)
+        }
+    }
+
+    private func endOfOutput() {
+        sawEOF = true
+        if let exited { finish(exited) }
+    }
+
+    private func exit(_ code: Int32) {
+        exited = code
+        if sawEOF { finish(code) }
+    }
+
+    private func finish(_ code: Int32) {
+        guard isRunning else { return }
+        isRunning = false
+        status = code
+        if code != 15 { append(code == 0 ? "\n✓ Done\n" : "\n✗ Exited with status \(code)\n") }
+        process?.terminationHandler = nil
+        onExit?(code)
+        onExit = nil
     }
 }
 
@@ -169,6 +339,32 @@ enum Scanner {
         ])).flatMap { $0.isEmpty ? nil : $0 }
         return p
     }
+
+    /// What the detail pane lists: changed files, recent commits, releases.
+    static func details(_ p: Project) -> ProjectDetails {
+        var d = ProjectDetails()
+        guard p.isGit else { return d }
+        func git(_ args: String...) -> String { (try? Shell.run(["git"] + args, in: p.url)) ?? "" }
+        d.changes = git("status", "--porcelain").split(separator: "\n").compactMap { line in
+            let parts = line.trimmingCharacters(in: .whitespaces).split(separator: " ", maxSplits: 1)
+            guard parts.count == 2 else { return nil }
+            return .init(status: String(parts[0]), path: parts[1].trimmingCharacters(in: .whitespaces))
+        }
+        d.commits = git("log", "-8", "--format=%h%x09%s%x09%cr").split(separator: "\n").compactMap { line in
+            let f = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
+            return f.count == 3 ? .init(hash: String(f[0]), subject: String(f[1]), when: String(f[2])) : nil
+        }
+        if let repo = p.repo, let out = try? Shell.run([
+            "gh", "release", "list", "-R", repo, "--limit", "5", "--json", "tagName,publishedAt",
+            "--jq", #".[] | "\(.tagName)\t\(.publishedAt)""#,
+        ]) {
+            d.releases = out.split(separator: "\n").compactMap { line in
+                let f = line.split(separator: "\t")
+                return f.count == 2 ? .init(tag: String(f[0]), date: String(f[1].prefix(10))) : nil
+            }
+        }
+        return d
+    }
 }
 
 struct ShellError: LocalizedError {
@@ -177,24 +373,30 @@ struct ShellError: LocalizedError {
 }
 
 enum Shell {
-    /// An app opened from Finder gets a bare PATH; Homebrew's gh lives outside it.
-    static let path = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+    /// An app opened from Finder gets a bare PATH; Homebrew's gh and
+    /// ~/.local/bin's new-mac-app live outside it.
+    static let path = "\(NSHomeDirectory())/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+
+    static let environment: [String: String] = {
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = path
+        env["GIT_TERMINAL_PROMPT"] = "0"  // fail rather than wait on a prompt nobody sees
+        env["GH_PROMPT_DISABLED"] = "1"
+        return env
+    }()
 
     static var hasGitHubCLI: Bool {
         path.split(separator: ":").contains { FileManager.default.isExecutableFile(atPath: "\($0)/gh") }
     }
 
-    /// Runs a command to the end: its trimmed output, or a ShellError with what it printed to stderr.
+    /// Runs a quick command to the end: its trimmed output, or a ShellError
+    /// with what it printed to stderr. Long ones with output to watch are a Job.
     @discardableResult
     static func run(_ command: [String], in folder: URL? = nil) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = command
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = path
-        env["GIT_TERMINAL_PROMPT"] = "0"  // fail rather than wait on a prompt nobody sees
-        env["GH_PROMPT_DISABLED"] = "1"
-        process.environment = env
+        process.environment = environment
         process.currentDirectoryURL = folder
         let out = Pipe(), err = Pipe()
         process.standardOutput = out
@@ -214,6 +416,23 @@ enum Shell {
     }
 }
 
+enum Quote {
+    /// Single-quoted for the shell: safe for any text.
+    static func shell(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
+    }
+
+    /// A TOML basic string, quotes included.
+    static func toml(_ s: String) -> String {
+        let escaped = s
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\t", with: "\\t")
+        return "\"\(escaped)\""
+    }
+}
+
 /// Hands a project to other apps. NSWorkspace rather than Apple Events, which
 /// need an entitlement under the hardened runtime and fail silently without one.
 @MainActor
@@ -222,11 +441,19 @@ enum Open {
     static func inXcode(_ p: Project) { with("com.apple.dt.Xcode", p.url.appending(path: "Package.swift")) }
     static func inTerminal(_ p: Project) { with("com.apple.Terminal", p.url) }
 
+    /// The copy make-app.sh installed, if there is one.
+    static func installed(_ p: Project) {
+        if let app = p.installedApp { NSWorkspace.shared.open(app) }
+    }
+
     /// Warp's agent, working in the app's folder.
     static func inAITerminal(_ p: Project) { inWarp(p, file: "shipyard", pane: #"type = "agent""#) }
-    /// A Warp tab in the app's folder running Claude Code.
-    static func inClaudeCode(_ p: Project) {
-        inWarp(p, file: "shipyard-claude", pane: #"type = "terminal""# + "\n" + #"commands = ["claude"]"#)
+
+    /// A Warp tab in the app's folder running Claude Code, optionally with a first prompt.
+    static func inClaudeCode(_ p: Project, prompt: String? = nil) {
+        // One line: Warp types startup commands into the shell.
+        let command = prompt.map { "claude " + Quote.shell($0.replacingOccurrences(of: "\n", with: " ")) } ?? "claude"
+        inWarp(p, file: "shipyard-claude", pane: "type = \"terminal\"\ncommands = [\(Quote.toml(command))]")
     }
 
     /// Rewrites a Warp tab config for this app and opens it by URL — Warp's own
@@ -235,15 +462,14 @@ enum Open {
         guard let warp = URL(string: "warp://tab_config/\(file)"),
               NSWorkspace.shared.urlForApplication(toOpen: warp) != nil
         else { return inTerminal(p) }
-        let folder = p.url.path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         let toml = """
         # Written by Shipyard each time it opens an app; changes here are overwritten.
-        name = "Shipyard: \(p.name)"
+        name = \(Quote.toml("Shipyard: \(p.name)"))
 
         [[panes]]
         id = "main"
         \(pane)
-        directory = "\(folder)"
+        directory = \(Quote.toml(p.url.path))
         is_focused = true
 
         """
@@ -267,4 +493,20 @@ enum Open {
         guard let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return }
         NSWorkspace.shared.open([url], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
     }
+}
+
+/// App icons, read once per refresh rather than on every row draw.
+@MainActor
+enum Icons {
+    private static var cache: [URL: NSImage] = [:]
+
+    static func image(for url: URL) -> NSImage {
+        if let hit = cache[url] { return hit }
+        let image = NSImage(contentsOf: url)
+            ?? NSImage(systemSymbolName: "app.dashed", accessibilityDescription: nil) ?? NSImage()
+        cache[url] = image
+        return image
+    }
+
+    static func clear() { cache.removeAll() }
 }

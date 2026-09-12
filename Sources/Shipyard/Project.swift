@@ -21,6 +21,18 @@ struct Project: Identifiable, Sendable {
     var name: String { slug.prefix(1).uppercased() + slug.dropFirst() }
 
     var isReleaseRunning: Bool { ["in_progress", "queued", "waiting", "pending"].contains(releaseRun ?? "") }
+    var iconURL: URL { url.appending(path: "AppIcon.icns") }
+
+    /// The copy make-app.sh installs, when it's there.
+    var installedApp: URL? {
+        let app = URL(fileURLWithPath: "/Applications/\(name).app")
+        return FileManager.default.fileExists(atPath: app.path) ? app : nil
+    }
+
+    /// A name new-mac-app accepts: one capitalized word, like Swab or Wheelhouse.
+    static func isValidName(_ name: String) -> Bool {
+        name.range(of: #"^[A-Z][A-Za-z0-9]+$"#, options: .regularExpression) != nil
+    }
 
     /// VERSION is ahead of the latest release: a release is due, pushed or not.
     var isReleasePending: Bool { releaseChecked && version != nil && version != released }
@@ -60,4 +72,30 @@ struct Project: Identifiable, Sendable {
         let parts = path.split(separator: "/")
         return parts.count == 2 ? parts.joined(separator: "/") : nil
     }
+}
+
+/// What the detail pane loads for the selected app, on demand.
+struct ProjectDetails: Sendable {
+    struct Change: Identifiable, Sendable {
+        let status: String
+        let path: String
+        var id: String { path }
+    }
+
+    struct Commit: Identifiable, Sendable {
+        let hash: String
+        let subject: String
+        let when: String
+        var id: String { hash }
+    }
+
+    struct Release: Identifiable, Sendable {
+        let tag: String
+        let date: String
+        var id: String { tag }
+    }
+
+    var changes: [Change] = []
+    var commits: [Commit] = []
+    var releases: [Release] = []
 }

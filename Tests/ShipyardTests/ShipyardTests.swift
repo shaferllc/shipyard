@@ -25,6 +25,16 @@ final class ShipyardTests: XCTestCase {
         XCTAssertNil(Project.githubRepo(fromRemote: "https://gitlab.com/shaferllc/swab.git"))
     }
 
+    func testQuotingForWarpAndTheShell() {
+        XCTAssertEqual(Quote.shell("it's"), #"'it'\''s'"#)
+        XCTAssertEqual(Quote.toml(#"say "hi" \ now"# + "\n"), #""say \"hi\" \\ now\n""#)
+    }
+
+    func testAppNamesNewMacAppAccepts() {
+        for good in ["Swab", "Wheelhouse", "Spyglass2"] { XCTAssertTrue(Project.isValidName(good), good) }
+        for bad in ["swab", "S", "Two Words", "Swab!", "Swab-Two", ""] { XCTAssertFalse(Project.isValidName(bad), bad) }
+    }
+
     func testBumpOnlyFromACleanReleasedMain() {
         var p = Project(url: URL(fileURLWithPath: "/tmp/swab"))
         p.isGit = true

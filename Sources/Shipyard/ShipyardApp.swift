@@ -15,6 +15,10 @@ struct ShipyardApp: App {
         .defaultSize(width: 980, height: 640)
         .commands {
             ShaferAccountCommands()
+            CommandGroup(replacing: .newItem) {
+                Button("New App…") { fleet.isCreatingApp = true }
+                    .keyboardShortcut("n")
+            }
             CommandGroup(after: .toolbar) {
                 Button("Refresh") { Task { await fleet.refresh() } }
                     .keyboardShortcut("r")
