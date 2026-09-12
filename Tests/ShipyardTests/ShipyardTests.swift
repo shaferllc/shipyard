@@ -25,6 +25,24 @@ final class ShipyardTests: XCTestCase {
         XCTAssertNil(Project.githubRepo(fromRemote: "https://gitlab.com/shaferllc/swab.git"))
     }
 
+    @MainActor
+    func testJobStreamsBothOutputsAndFinishesLast() async throws {
+        let job = Job(projectID: "test", title: "Test")
+        let exited = expectation(description: "exited")
+        var code: Int32?
+        try job.start(["sh", "-c", "echo out; echo err >&2; exit 3"],
+                      in: URL(fileURLWithPath: NSTemporaryDirectory()), environment: [:]) { status in
+            code = status
+            exited.fulfill()
+        }
+        await fulfillment(of: [exited], timeout: 10)
+        XCTAssertEqual(code, 3)
+        XCTAssertFalse(job.isRunning)
+        XCTAssertTrue(job.output.contains("out\n") && job.output.contains("err\n"), job.output)
+        // The end of the stream is waited for, so nothing lands after the result.
+        XCTAssertTrue(job.output.hasSuffix("✗ Exited with status 3\n"), job.output)
+    }
+
     func testQuotingForWarpAndTheShell() {
         XCTAssertEqual(Quote.shell("it's"), #"'it'\''s'"#)
         XCTAssertEqual(Quote.toml(#"say "hi" \ now"# + "\n"), #""say \"hi\" \\ now\n""#)
