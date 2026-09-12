@@ -5,16 +5,30 @@ import SwiftUI
 @main
 struct ShipyardApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    @StateObject private var fleet = Fleet()
 
     var body: some Scene {
         Window("Shipyard", id: "main") {
             ContentView()
+                .environmentObject(fleet)
         }
-        .commands { ShaferAccountCommands() }
+        .defaultSize(width: 980, height: 640)
+        .commands {
+            ShaferAccountCommands()
+            CommandGroup(after: .toolbar) {
+                Button("Refresh") { Task { await fleet.refresh() } }
+                    .keyboardShortcut("r")
+            }
+        }
 
         Settings {
-            AccountView()
-                .frame(width: 460)
+            TabView {
+                SettingsView()
+                    .tabItem { Label("Folders", systemImage: "folder") }
+                AccountView()
+                    .tabItem { Label("Account", systemImage: "person.crop.circle") }
+            }
+            .frame(width: 460)
         }
     }
 }

@@ -1,13 +1,11 @@
 #!/usr/bin/env swift
-// Generates AppIcon.icns: a squircle in a gradient picked from the app's name,
-// with its initial in white. A placeholder — replace the drawing in makePNG
-// with the app's real mark.
+// Generates AppIcon.icns: a slate-to-navy squircle, a gold crane lowering an
+// app onto a white hull — every app loaded and shipped from one yard.
 // Usage: swift make-icon.swift  (run from the repo root)
 
 import AppKit
 import Foundation
 
-let name = "Shipyard"
 let here = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
 let iconset = here.appendingPathComponent("AppIcon.iconset")
 try? FileManager.default.removeItem(at: iconset)
@@ -20,9 +18,6 @@ let sizes: [(String, Int)] = [
     ("icon_256x256", 256), ("icon_256x256@2x", 512),
     ("icon_512x512", 512), ("icon_512x512@2x", 1024),
 ]
-
-// A stable hue per name, so every placeholder looks different.
-let hue = CGFloat(name.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) % 360 }) / 360
 
 func makePNG(size px: Int) -> Data? {
     let pf = CGFloat(px)
@@ -38,20 +33,46 @@ func makePNG(size px: Int) -> Data? {
     guard let ctx = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
     NSGraphicsContext.current = ctx
 
+    func p(_ x: CGFloat, _ y: CGFloat) -> NSPoint { NSPoint(x: pf * x, y: pf * y) }
+
     let rect = NSRect(x: 0, y: 0, width: pf, height: pf)
     NSBezierPath(roundedRect: rect, xRadius: pf * 0.225, yRadius: pf * 0.225).addClip()
     NSGradient(colors: [
-        NSColor(hue: hue, saturation: 0.55, brightness: 0.85, alpha: 1),
-        NSColor(hue: hue, saturation: 0.75, brightness: 0.40, alpha: 1),
+        NSColor(srgbRed: 0.24, green: 0.42, blue: 0.64, alpha: 1),
+        NSColor(srgbRed: 0.06, green: 0.12, blue: 0.26, alpha: 1),
     ])!.draw(in: rect, angle: -90)
 
-    let letter = String(name.prefix(1)) as NSString
-    let attrs: [NSAttributedString.Key: Any] = [
-        .font: NSFont.systemFont(ofSize: pf * 0.56, weight: .bold),
-        .foregroundColor: NSColor.white,
-    ]
-    let size = letter.size(withAttributes: attrs)
-    letter.draw(at: NSPoint(x: (pf - size.width) / 2, y: (pf - size.height) / 2), withAttributes: attrs)
+    // Crane: mast and jib, then the cable down to the load.
+    let gold = NSColor(srgbRed: 0.96, green: 0.71, blue: 0.27, alpha: 1)
+    gold.setStroke()
+    let crane = NSBezierPath()
+    crane.move(to: p(0.30, 0.30))
+    crane.line(to: p(0.30, 0.82))
+    crane.line(to: p(0.80, 0.82))
+    crane.lineWidth = max(1.5, pf * 0.055)
+    crane.lineCapStyle = .round
+    crane.lineJoinStyle = .round
+    crane.stroke()
+    let cable = NSBezierPath()
+    cable.move(to: p(0.66, 0.82))
+    cable.line(to: p(0.66, 0.62))
+    cable.lineWidth = max(1, pf * 0.022)
+    cable.stroke()
+
+    // The load: an app, squircle and all.
+    NSColor.white.setFill()
+    NSBezierPath(roundedRect: NSRect(origin: p(0.56, 0.42), size: NSSize(width: pf * 0.20, height: pf * 0.20)),
+                 xRadius: pf * 0.05, yRadius: pf * 0.05).fill()
+
+    // The hull it's going into.
+    let hull = NSBezierPath()
+    hull.move(to: p(0.12, 0.36))
+    hull.line(to: p(0.88, 0.36))
+    hull.line(to: p(0.74, 0.15))
+    hull.line(to: p(0.26, 0.15))
+    hull.close()
+    NSColor(calibratedWhite: 1, alpha: 0.92).setFill()
+    hull.fill()
 
     return rep.representation(using: .png, properties: [:])
 }
