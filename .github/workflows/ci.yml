@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: swift build
+      - name: Test
+        run: swift test
+
+  # Assemble the real .app on every push and PR: icon generation, the
+  # Info.plist and the URL scheme are only exercised by make-app.sh.
+  app:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build app bundle
+        run: VERSION="0.0.0-${GITHUB_SHA:0:7}" ./make-app.sh --dist
+      - name: Verify the bundle is well formed
+        run: |
+          set -euo pipefail
+          APP=dist/Shipyard.app
+          test -x "$APP/Contents/MacOS/Shipyard"
+          test -f "$APP/Contents/Resources/AppIcon.icns"
+          plutil -lint "$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleURLTypes:0:CFBundleURLSchemes:0" \
+            "$APP/Contents/Info.plist" | grep -qx shipyard
+          codesign --verify --deep --strict "$APP"

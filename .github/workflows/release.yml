@@ -1,0 +1,27 @@
+name: Release
+
+# Bump VERSION on main and this cuts a signed, notarized release through the
+# shared shaferllc Mac release (shaferllc/.github). Run it by hand from the
+# Actions tab for a dry run: build, sign, notarize and verify, publish nothing.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Dry run — build, sign and notarize without publishing
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: shaferllc/.github/.github/workflows/mac-release.yml@main
+    with:
+      app: Shipyard
+      notes: >-
+        Keeps every Shafer LLC Mac app in one place: versions, git, releases and updates.
+      dry_run: ${{ inputs.dry_run == true }}
+    secrets: inherit

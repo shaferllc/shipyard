@@ -1,0 +1,15 @@
+{
+  "originHash" : "698f725a9f8db5e6e6595858a36fc9f9c30c8caf614f97e0d050fc2d8ef48315",
+  "pins" : [
+    {
+      "identity" : "swift-licensing",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/shaferllc/swift-licensing",
+      "state" : {
+        "revision" : "e782f816b40567518218a25dee4ae5a02671ecb7",
+        "version" : "1.1.0"
+      }
+    }
+  ],
+  "version" : 3
+}
