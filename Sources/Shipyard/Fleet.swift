@@ -297,10 +297,25 @@ enum Scanner {
         let fm = FileManager.default
         let productsText = (try? String(contentsOf: products, encoding: .utf8)) ?? ""
         let folders = (try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
-        return folders
+        let found = folders
             .filter { fm.fileExists(atPath: $0.appending(path: "make-app.sh").path) }
             .map { local($0, productsText: productsText) }
-            .sorted { $0.slug < $1.slug }
+        return combineCheckouts(found).sorted { $0.slug < $1.slug }
+    }
+
+    /// One row per repo, not per folder. A linked worktree is another checkout
+    /// of an app already in the list, so it folds into that app's row, newest
+    /// VERSION first — showing it separately invents an app that doesn't exist
+    /// and then flags it as unreleased against the other checkout's tags.
+    static func combineCheckouts(_ projects: [Project]) -> [Project] {
+        let groups = Dictionary(grouping: projects) { $0.repoRoot ?? $0.url.path }
+        return groups.values.compactMap { group -> Project? in
+            guard group.count > 1 else { return group.first }
+            let ordered = group.sorted { Project.newer($0.version, $1.version) }
+            var newest = ordered[0]
+            newest.checkouts = Array(ordered.dropFirst())
+            return newest
+        }
     }
 
     static func local(_ url: URL, productsText: String) -> Project {
@@ -316,6 +331,11 @@ enum Scanner {
         p.isProduct = productsText.contains("'\(p.slug)' => [")
         p.isGit = FileManager.default.fileExists(atPath: url.appending(path: ".git").path)
         guard p.isGit else { return p }
+        // --git-common-dir is the main repo's .git for a worktree and plain
+        // ".git" for the repo itself, so its parent is the one folder every
+        // checkout shares.
+        p.repoRoot = git("rev-parse", "--path-format=absolute", "--git-common-dir")
+            .map { URL(fileURLWithPath: $0).deletingLastPathComponent().path }
         p.repo = git("remote", "get-url", "origin").flatMap { Project.githubRepo(fromRemote: $0) }
         p.branch = git("rev-parse", "--abbrev-ref", "HEAD")
         p.changes = git("status", "--porcelain")?.split(separator: "\n").count ?? 0

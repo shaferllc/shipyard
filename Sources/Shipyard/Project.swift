@@ -15,6 +15,18 @@ struct Project: Identifiable, Sendable {
     var releaseChecked = false  // GitHub answered, so `released` is real
     var released: String?       // the latest release's version, without the v
     var releaseRun: String?     // the latest Release run: success, failure, in_progress…
+    /// The folder the repo actually lives in — the same for every checkout of
+    /// it. A linked worktree (`ledge-1.1` beside `ledge`) has its own folder
+    /// and its own make-app.sh, so it looks like a second app until you notice
+    /// both point at one repo. Worse, it reads as a broken one: its older
+    /// VERSION gets measured against the whole repo's newest tag.
+    var repoRoot: String?
+    /// The repo's other checkouts, newest VERSION first. Only the newest gets
+    /// a row; the rest hang off it.
+    var checkouts: [Project] = []
+
+    /// A worktree rather than the folder the repo lives in.
+    var isCheckout: Bool { repoRoot.map { $0 != url.path } ?? false }
 
     var id: String { url.path }
     var slug: String { url.lastPathComponent }
@@ -62,6 +74,22 @@ struct Project: Identifiable, Sendable {
         if isReleasePending, let version { out.append("v\(version) not released") }
         if releaseRun == "failure" { out.append("Release run failed") }
         return out
+    }
+
+    /// Is `a` a newer VERSION than `b`? Compared component by component rather
+    /// than through `Version`, which insists on x.y.z — plenty of real VERSION
+    /// files say "1.2", and a checkout still has to sort somewhere.
+    static func newer(_ a: String?, _ b: String?) -> Bool {
+        guard let a else { return false }
+        guard let b else { return true }
+        let left = a.split(separator: ".").map { Int($0) ?? 0 }
+        let right = b.split(separator: ".").map { Int($0) ?? 0 }
+        for i in 0..<max(left.count, right.count) {
+            let l = i < left.count ? left[i] : 0
+            let r = i < right.count ? right[i] : 0
+            if l != r { return l > r }
+        }
+        return false
     }
 
     /// "owner/name" from an https or ssh GitHub remote; nil for anything else.

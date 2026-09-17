@@ -100,6 +100,18 @@ struct ProjectDetail: View {
                     .disabled(project.bumpBlocker != nil)
                 }
             }
+            // Folded into this row rather than listed as apps of their own —
+            // still worth naming, or an old release branch checked out beside
+            // the repo becomes invisible.
+            if !project.checkouts.isEmpty {
+                group("Other Checkouts") {
+                    ForEach(project.checkouts) { checkout in
+                        Tile("\(checkout.slug) · \(checkout.branch ?? "detached")", "arrow.triangle.branch") {
+                            Open.inFinder(checkout)
+                        }
+                    }
+                }
+            }
             if let blocker = project.bumpBlocker, project.isGit {
                 Label(blocker, systemImage: "info.circle")
                     .font(.caption)

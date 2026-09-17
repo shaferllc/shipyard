@@ -91,4 +91,42 @@ final class ShipyardTests: XCTestCase {
         XCTAssertNotNil(unknown.bumpBlocker)
         XCTAssertFalse(unknown.isReleasePending)
     }
+
+    private func checkout(_ path: String, version: String?, root: String) -> Project {
+        var p = Project(url: URL(fileURLWithPath: path))
+        p.version = version
+        p.isGit = true
+        p.repoRoot = root
+        return p
+    }
+
+    func testWorktreesFoldIntoOneRowNewestFirst() {
+        // ledge-1.1 is a worktree of ledge: one app, two folders.
+        let main = checkout("/apps/ledge", version: "1.2", root: "/apps/ledge")
+        let old = checkout("/apps/ledge-1.1", version: "1.1", root: "/apps/ledge")
+        let other = checkout("/apps/quay", version: "0.4", root: "/apps/quay")
+
+        let combined = Scanner.combineCheckouts([old, main, other]).sorted { $0.slug < $1.slug }
+        XCTAssertEqual(combined.map(\.slug), ["ledge", "quay"])
+        // The newest VERSION is the row, whichever order they turned up in.
+        XCTAssertEqual(combined[0].version, "1.2")
+        XCTAssertEqual(combined[0].checkouts.map(\.slug), ["ledge-1.1"])
+        XCTAssertTrue(combined[1].checkouts.isEmpty)
+    }
+
+    func testVersionsCompareLoosely() {
+        // Not every VERSION is x.y.z, so this can't lean on Version.
+        XCTAssertTrue(Project.newer("1.2", "1.1"))
+        XCTAssertTrue(Project.newer("1.10", "1.9"))     // not a string compare
+        XCTAssertFalse(Project.newer("1.2", "1.2.0"))   // same version, spelled differently
+        XCTAssertTrue(Project.newer("1.2.1", "1.2"))
+        XCTAssertTrue(Project.newer("1.0", nil))        // something beats nothing
+        XCTAssertFalse(Project.newer(nil, "1.0"))
+    }
+
+    func testACheckoutKnowsItIsOne() {
+        XCTAssertTrue(checkout("/apps/ledge-1.1", version: "1.1", root: "/apps/ledge").isCheckout)
+        XCTAssertFalse(checkout("/apps/ledge", version: "1.2", root: "/apps/ledge").isCheckout)
+        XCTAssertFalse(Project(url: URL(fileURLWithPath: "/apps/loose")).isCheckout)
+    }
 }
