@@ -273,6 +273,8 @@ private struct ProjectMenu: View {
         Button("Build & Run") { fleet.build(p) }
         Button("Test") { fleet.test(p) }
         Button("Package for Release") { fleet.package(p) }
+        Button("Ship (Sign, Notarize, Publish)") { fleet.ship(p) }
+        Button("Ship — Dry Run") { fleet.ship(p, dryRun: true) }
         if p.installedApp != nil {
             Button("Launch Installed Copy") { Open.installed(p) }
         }

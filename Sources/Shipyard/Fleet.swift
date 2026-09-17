@@ -131,6 +131,20 @@ final class Fleet: ObservableObject {
         }
     }
 
+    /// Builds, signs, notarizes and publishes an app from this Mac — the whole
+    /// release without GitHub Actions, which a Free-plan org can't hand signing
+    /// secrets to on a private repo. `ship.sh` lives here rather than in each
+    /// app so the fleet has one copy; it checks per app what's actually there,
+    /// because not all of them have a Sparkle feed or an R2 publish script.
+    func ship(_ p: Project, dryRun: Bool = false) {
+        let script = Self.appsFolder.appending(path: "shipyard/ship.sh").path
+        start("\(dryRun ? "Dry run" : "Ship") \(p.name)", ["bash", script, p.url.path],
+              id: p.id, in: p.url,
+              environment: dryRun ? ["DRY_RUN": "1"] : [:]) { [weak self] ok in
+            if ok { Task { await self?.refresh() } }
+        }
+    }
+
     /// Scaffolds an app with new-mac-app (local only: no repo, no site entry),
     /// selects it, and with a brief hands it to Claude Code to build.
     func createApp(name: String, about: String, brief: String) {

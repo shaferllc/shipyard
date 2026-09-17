@@ -74,6 +74,11 @@ struct ProjectDetail: View {
                 Tile("Build & Run", "play.fill") { fleet.build(project) }.disabled(busy)
                 Tile("Test", "checklist") { fleet.test(project) }.disabled(busy)
                 Tile("Package", "archivebox") { fleet.package(project) }.disabled(busy)
+                // Sign, notarize and publish from here. Right-click for the
+                // dry run: the whole thing short of making it public.
+                Tile("Ship", "paperplane.fill") { fleet.ship(project) }
+                    .disabled(busy)
+                    .contextMenu { Button("Dry Run…") { fleet.ship(project, dryRun: true) } }
                 if let job, job.isRunning {
                     Tile("Stop", "stop.fill", tint: .red) { job.stop() }
                 } else {
